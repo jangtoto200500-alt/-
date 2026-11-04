@@ -311,4 +311,5 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(setting("PORT", "10000"))
     print("Shorts Studio ready; password and tokens are never printed", flush=True)
+    print("CONFIG_READY admin={} google_oauth={} refresh_token={} youtube_public_api={}".format(admin_ready(), google_ready(), has_refresh_token(), bool(setting("YOUTUBE_API_KEY"))), flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
