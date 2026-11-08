@@ -117,11 +117,15 @@ def verify_owned_channel(token: str) -> None:
         raise ChannelMismatch(channels)
 
 
-def private_upload(mp4: bytes, title: str, description: str, when_kr: str) -> str:
-    """업로드 시 비공개 기본. 미래 일정이 있으면 YouTube 자체 예약 공개."""
+def private_upload(mp4: bytes, title: str, description: str, when_kr: str, *, privacy: str = "private") -> str:
+    """User-driven private upload by default; a one-time approved job may request public."""
+    if privacy not in ("private", "public"):
+        raise ValueError("Invalid video privacy")
+    if when_kr and privacy != "private":
+        raise ValueError("Scheduled releases must start private")
     token = access_token()
     verify_owned_channel(token)
-    status = {"privacyStatus": "private", "selfDeclaredMadeForKids": False}
+    status = {"privacyStatus": privacy, "selfDeclaredMadeForKids": False}
     if when_kr:
         kst = dt.timezone(dt.timedelta(hours=9))
         local = dt.datetime.fromisoformat(when_kr).replace(tzinfo=kst)
@@ -420,8 +424,102 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(502, safe_page("업로드 실패", "<article>Google OAuth/API 오류가 발생했습니다. OAuth 권한, API 할당량, 채널 선택을 확인하세요. 영상을 다시 업로드하기 전에 YouTube Studio에서 중복 여부를 확인하세요.</article>"))
 
 
+# Single approved release for the owner's own channel. The feature is inert
+# unless the service owner explicitly sets the one-time Render environment flag.
+RELEASE_FLAG = "WONRI_RELEASE_20261108"
+RELEASE_TITLE = "15초만 쉬어봐요 ☕ 1·2·3 중 뭐가 제일 편해요? #Shorts"
+RELEASE_DESCRIPTION = (
+    "커피가 흐르고, 말랑한 슬라임이 움직이고, 빗방울이 떨어지는 15초.\n"
+    "가장 편안한 장면은 1·2·3 중 무엇인가요?\n\n"
+    "커피·슬라임·빗소리 실사 영상에 새로운 한국어 내레이션, 음악과 자막을 편집했습니다.\n"
+    "Footage credits / Pexels: Luis C. Tavera, cottonbro studio, Bradley Murray.\n"
+    "https://www.pexels.com/video/pouring-coffee-on-a-glass-8365478/\n"
+    "https://www.pexels.com/video/a-hand-squeezing-the-slime-6150668/\n"
+    "https://www.pexels.com/video/a-car-with-rain-on-the-windshield-and-a-traffic-light-9494245/\n"
+    "#원리한입 #힐링영상 #커피 #ASMR #Shorts"
+)
+RELEASE_ASSET_URL = (
+    "https://assets.vidiq.com/compositions/"
+    "d3080c6c-da93-47ca-b62c-539758e4d850/"
+    "yasivrput19lfxw359hd4ezz.mp4"
+)
+
+
+def find_release_duplicate(token: str) -> str:
+    """Read the owner's uploads playlist before writing; fail closed on API errors."""
+    doc = json.loads(api_request(
+        "https://www.googleapis.com/youtube/v3/channels?" +
+        urlencode({"part": "contentDetails", "mine": "true"}),
+        headers={"Authorization": "Bearer " + token}, timeout=15))
+    playlists = []
+    for channel in doc.get("items", []):
+        if channel.get("id") == CHANNEL_ID:
+            uploads = channel.get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads", "")
+            if uploads:
+                playlists.append(uploads)
+    if len(playlists) != 1:
+        raise RuntimeError("Cannot safely identify owner's uploads playlist")
+    page = ""
+    for _ in range(30):
+        params = {"part": "snippet", "playlistId": playlists[0], "maxResults": 50}
+        if page:
+            params["pageToken"] = page
+        result = json.loads(api_request(
+            "https://www.googleapis.com/youtube/v3/playlistItems?" + urlencode(params),
+            headers={"Authorization": "Bearer " + token}, timeout=18))
+        for item in result.get("items", []):
+            sn = item.get("snippet", {})
+            if sn.get("title") == RELEASE_TITLE:
+                candidate = sn.get("resourceId", {}).get("videoId", "")
+                if candidate and all(v.isalnum() or v in "-_" for v in candidate):
+                    return candidate
+        page = result.get("nextPageToken", "")
+        if not page:
+            return ""
+    # Do not risk duplicates if the uploads playlist is too large to inspect.
+    raise RuntimeError("Duplicate safety check exceeded max pagination")
+
+
+def release_one_approved_video():
+    """One-shot publisher behind a date-specific env flag; no secrets logged."""
+    if setting(RELEASE_FLAG) != "publish":
+        return
+    print("RELEASE_JOB stage=started target=wonri", flush=True)
+    try:
+        token = access_token()
+        verify_owned_channel(token)
+        existing = find_release_duplicate(token)
+        if existing:
+            print(f"RELEASE_JOB result=existing id={existing}", flush=True)
+            return
+        with urlopen(Request(RELEASE_ASSET_URL, headers={"User-Agent": "Wonrihanip-AuthorizedUpload/1.0"}), timeout=75) as response:
+            if urlsplit(response.geturl()).hostname not in ("assets.vidiq.com",):
+                raise RuntimeError("Media download redirected off the expected host")
+            content = response.read(MAX_UPLOAD_BYTES + 1)
+        if not (100000 <= len(content) <= MAX_UPLOAD_BYTES and content[4:8] == b"ftyp"):
+            raise RuntimeError("Media file failed MP4 size/magic validation")
+        print(f"RELEASE_JOB stage=media_verified bytes={len(content)}", flush=True)
+        video_id = private_upload(content, RELEASE_TITLE, RELEASE_DESCRIPTION, "", privacy="public")
+        try:
+            status_doc = json.loads(api_request(
+                "https://www.googleapis.com/youtube/v3/videos?" +
+                urlencode({"part": "status", "id": video_id}),
+                headers={"Authorization": "Bearer " + token}, timeout=18))
+            visibility = (status_doc.get("items") or [{}])[0].get("status", {}).get("privacyStatus", "unknown")
+        except Exception:
+            visibility = "unverified"
+        print(f"RELEASE_JOB result=uploaded id={video_id} visibility={visibility}", flush=True)
+    except HTTPError as e:
+        print(f"RELEASE_JOB result=failed error=provider_http_{e.code}", flush=True)
+    except Exception as e:
+        # Only a safe class name is logged, not URLs/tokens/provider payloads.
+        print(f"RELEASE_JOB result=failed error_class={type(e).__name__}", flush=True)
+
+
 if __name__ == "__main__":
     port = int(setting("PORT", "10000"))
     print("Shorts Studio ready; password and tokens are never printed", flush=True)
     print("CONFIG_READY admin={} google_oauth={} refresh_token={} youtube_public_api={}".format(admin_ready(), google_ready(), has_refresh_token(), bool(setting("YOUTUBE_API_KEY"))), flush=True)
+    if setting(RELEASE_FLAG) == "publish":
+        threading.Thread(target=release_one_approved_video, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
