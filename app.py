@@ -445,7 +445,7 @@ RELEASE_ASSET_URL = (
 )
 
 
-def find_release_duplicate(token: str) -> str:
+def find_release_duplicate(token: str, title: str = RELEASE_TITLE) -> str:
     """Read the owner's uploads playlist before writing; fail closed on API errors."""
     doc = json.loads(api_request(
         "https://www.googleapis.com/youtube/v3/channels?" +
@@ -469,7 +469,7 @@ def find_release_duplicate(token: str) -> str:
             headers={"Authorization": "Bearer " + token}, timeout=18))
         for item in result.get("items", []):
             sn = item.get("snippet", {})
-            if sn.get("title") == RELEASE_TITLE:
+            if sn.get("title") == title:
                 candidate = sn.get("resourceId", {}).get("videoId", "")
                 if candidate and all(v.isalnum() or v in "-_" for v in candidate):
                     return candidate
@@ -516,10 +516,67 @@ def release_one_approved_video():
         print(f"RELEASE_JOB result=failed error_class={type(e).__name__}", flush=True)
 
 
+# 2026-11-09: exact original film and public release explicitly requested.
+TODAY_TITLE = "직선처럼 보이는데 왜 더 길지? 계단의 역설 #Shorts"
+TODAY_DESCRIPTION = (
+    "계단을 점점 잘게 나누면 대각선과 거의 구별되지 않습니다.\n"
+    "그런데 한 변이 1인 정사각형에서 계단을 따라간 거리는 항상 2,\n"
+    "진짜 대각선의 길이는 √2 ≈ 1.414입니다. 왜 그럴까요?\n\n"
+    "장면·한글 자막·모션그래픽·효과음은 원리한입에서 직접 제작했습니다.\n"
+    "수학 참고: Wolfram MathWorld, Diagonal Paradox\n"
+    "https://mathworld.wolfram.com/DiagonalParadox.html\n"
+    "참고 인기 주제: Staircase Paradox (원본 영상/음원 미사용).\n"
+    "#원리한입 #계단역설 #수학 #착시 #과학 #Shorts"
+)
+TODAY_SHA256 = "a8c502f23f16aedd93b9d2fc457e82e75c12d494da917d16be7f3cff98218754"
+
+
+def release_nov_09():
+    """User-authorized one-time direct public upload, never automatic daily release."""
+    if setting("WONRI_1109_TRIGGER") != "publish":
+        return
+    print("NOV09_JOB stage=started", flush=True)
+    try:
+        token = access_token()
+        verify_owned_channel(token)
+        existing = find_release_duplicate(token, TODAY_TITLE)
+        if existing:
+            print(f"NOV09_JOB result=existing id={existing}", flush=True)
+            return
+        url = setting("WONRI_1109_SOURCE_URL")
+        if urlsplit(url).scheme != "https" or urlsplit(url).hostname != "storage.googleapis.com":
+            raise RuntimeError("Expected signed media asset URL")
+        with urlopen(Request(url, headers={"User-Agent": "Wonrihanip-AuthorizedUpload/1.0"}), timeout=100) as resp:
+            if urlsplit(resp.geturl()).hostname != "storage.googleapis.com":
+                raise RuntimeError("Unexpected media redirect")
+            mp4 = resp.read(MAX_UPLOAD_BYTES+1)
+        if not (100_000 <= len(mp4) <= MAX_UPLOAD_BYTES and mp4[4:8] == b"ftyp"):
+            raise ValueError("Media integrity or size error")
+        if hashlib.sha256(mp4).hexdigest() != TODAY_SHA256:
+            raise ValueError("Media SHA256 check failed")
+        print(f"NOV09_JOB stage=sha_verified bytes={len(mp4)}", flush=True)
+        video_id = private_upload(mp4, TODAY_TITLE, TODAY_DESCRIPTION, "", privacy="public")
+        verify = json.loads(api_request(
+            "https://www.googleapis.com/youtube/v3/videos?" +
+            urlencode({"part": "status,snippet", "id": video_id}),
+            headers={"Authorization": "Bearer " + token}, timeout=24))
+        item = (verify.get("items") or [{}])[0]
+        visibility = item.get("status", {}).get("privacyStatus", "unknown")
+        actual_title = item.get("snippet", {}).get("title", "")
+        correct = visibility == "public" and actual_title == TODAY_TITLE
+        print(f"NOV09_JOB result=uploaded id={video_id} visibility={visibility} title_ok={correct}", flush=True)
+    except HTTPError as exc:
+        print(f"NOV09_JOB result=failed http={exc.code}", flush=True)
+    except Exception as exc:
+        print(f"NOV09_JOB result=failed class={type(exc).__name__}", flush=True)
+
+
 if __name__ == "__main__":
     port = int(setting("PORT", "10000"))
     print("Shorts Studio ready; password and tokens are never printed", flush=True)
     print("CONFIG_READY admin={} google_oauth={} refresh_token={} youtube_public_api={}".format(admin_ready(), google_ready(), has_refresh_token(), bool(setting("YOUTUBE_API_KEY"))), flush=True)
     if setting(RELEASE_FLAG) == "publish":
         threading.Thread(target=release_one_approved_video, daemon=True).start()
+    if setting("WONRI_1109_TRIGGER") == "publish":
+        threading.Thread(target=release_nov_09, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
