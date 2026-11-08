@@ -99,11 +99,22 @@ def access_token() -> str:
     return token
 
 
+class ChannelMismatch(RuntimeError):
+    def __init__(self, channels: list[dict]):
+        super().__init__("OAuth was authorized for a different YouTube channel")
+        self.channels = channels
+
+
 def verify_owned_channel(token: str) -> None:
-    url = "https://www.googleapis.com/youtube/v3/channels?" + urlencode({"part": "id", "mine": "true"})
+    url = "https://www.googleapis.com/youtube/v3/channels?" + urlencode({"part": "id,snippet", "mine": "true"})
     data = json.loads(api_request(url, headers={"Authorization": "Bearer " + token}, timeout=12))
-    if CHANNEL_ID not in [v.get("id") for v in data.get("items", [])]:
-        raise RuntimeError("승인한 Google 계정이 원리한입 채널 소유자가 아닙니다")
+    channels = []
+    for item in data.get("items", []):
+        if isinstance(item, dict):
+            channels.append({"id": str(item.get("id", ""))[:80],
+                             "title": str(item.get("snippet", {}).get("title", ""))[:100]})
+    if CHANNEL_ID not in [v["id"] for v in channels]:
+        raise ChannelMismatch(channels)
 
 
 def private_upload(mp4: bytes, title: str, description: str, when_kr: str) -> str:
@@ -156,7 +167,7 @@ def dashboard() -> str:
     return safe_page("원리한입 대시보드", f'''<article><h2>실제 채널</h2><p><a href="https://www.youtube.com/channel/{CHANNEL_ID}">원리한입 · @원리-i2m</a></p>
 <p>공식 API 통계: {html.escape(s['note'])}</p><p>구독자 {stat('subscribers')} · 조회수 {stat('views')} · 공개 영상 {stat('videos')}</p>
 <p>업로드 OAuth: <strong>{auth}</strong> · 실제 광고 수익: <strong>미확인</strong></p></article>
-<article><h2>① Google OAuth</h2><p>{oauth}</p><p>Google의 승인을 받은 뒤 Refresh Token을 Render 비밀 환경변수 YT_REFRESH_TOKEN에 저장하면 서버 재시작 후에도 업로드 권한이 유지됩니다.</p></article>
+<article><h2>① Google OAuth</h2><p>{oauth}</p><p>Google 계정 선택 뒤 유튜브 채널 선택 화면이 나오면 반드시 '원리한입' 채널을 선택하세요. 다른 채널을 선택하면 업로드가 차단됩니다. 승인 후 Refresh Token은 Render 비밀 환경변수 YT_REFRESH_TOKEN에만 저장하세요.</p></article>
 <article><h2>② 첫 쇼츠 비공개 업로드</h2><p><b>원리한입 댓글극장 01</b> 원본 MP4를 선택하세요. 제목과 설명은 미리 채웠으며 수정할 수 있습니다. 예약 시각을 비워 두면 <b>비공개</b>로 업로드됩니다. 구글 업로드 권한 승인 후 아래 버튼을 누르세요.</p>{form}</article>''')
 
 
@@ -226,7 +237,7 @@ class Handler(BaseHTTPRequestHandler):
             state = secrets.token_urlsafe(32)
             params = {"client_id": setting("GOOGLE_CLIENT_ID"), "redirect_uri": base_url() + "/oauth/callback",
                       "response_type": "code", "scope": YT_SCOPE, "state": state,
-                      "access_type": "offline", "prompt": "consent", "include_granted_scopes": "true"}
+                      "access_type": "offline", "prompt": "select_account consent", "include_granted_scopes": "true"}
             url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
             self.send(302, "Redirecting to Google", "text/plain; charset=utf-8", extra=[
                 ("Set-Cookie", f"{OAUTH_COOKIE}={state}; Secure; HttpOnly; SameSite=Lax; Path=/oauth/callback; Max-Age=600"),
@@ -300,6 +311,19 @@ class Handler(BaseHTTPRequestHandler):
                     f"Google HTTP {error.code} / 오류 코드: {html.escape(reason)}</p>"
                     f"<p>{guidance}</p><p>인증정보는 표시하거나 저장하지 않았습니다.</p></article>")
             return self.send(502, safe_page("OAuth 연결 진단", body), extra=cleared)
+        except ChannelMismatch as error:
+            print(f"OAUTH_DIAG stage={stage} reason=channel_mismatch count={len(error.channels)}", flush=True)
+            if error.channels:
+                selected = ", ".join(html.escape(row["title"] or "(이름 없음)") +
+                                     " (ID: " + html.escape(row["id"]) + ")" for row in error.channels)
+            else:
+                selected = "OAuth 토큰에 연결된 유튜브 채널이 없습니다."
+            guidance = ("다시 인증할 때 Google 계정뿐 아니라 유튜브 채널 선택 화면에서도 "
+                        "원리한입을 선택하세요. 채널 선택 화면이 없다면 유튜브의 기본 채널 설정을 확인하세요.")
+            return self.send(502, safe_page("YouTube 채널 선택 오류",
+                             f"<article><h2>현재 승인된 채널</h2><p>{selected}</p>"
+                             f"<h2>업로드 대상 채널</h2><p>원리한입 (ID: {CHANNEL_ID})</p>"
+                             f"<p>{guidance}</p></article>"), extra=cleared)
         except RuntimeError as error:
             mismatch = str(error) == "승인한 Google 계정이 원리한입 채널 소유자가 아닙니다"
             reason = "channel_mismatch" if mismatch else "runtime_error"
