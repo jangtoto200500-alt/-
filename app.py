@@ -153,12 +153,46 @@ def safe_page(title: str, content: str) -> str:
 <h1>원리한입 · Shorts Studio</h1>{content}<p><small>실제 업로드는 사용자 조작으로만 수행합니다. 이 서버는 수익 발생을 보장하지 않습니다.</small></p></body></html>'''
 
 
+def upload_form_token() -> str:
+    """Signed, short-lived form token. No cookie or JavaScript required."""
+    issued = str(int(time.time()))
+    nonce = secrets.token_hex(16)
+    plain = issued + "." + nonce
+    sig = hmac.new(setting("ADMIN_PASSWORD").encode("utf-8"),
+                   ("wonri-upload-v1:" + plain).encode("utf-8"),
+                   hashlib.sha256).hexdigest()
+    return plain + "." + sig
+
+
+def valid_upload_form_token(token: str) -> bool:
+    """Reject forged, stale and malformed cross-site upload requests."""
+    try:
+        if len(token) > 120:
+            return False
+        issued, nonce, sig = token.split(".")
+        if not issued.isascii() or not issued.isdigit() or len(nonce) != 32 or len(sig) != 64:
+            return False
+        if not all(c in "0123456789abcdef" for c in nonce + sig):
+            return False
+        age = int(time.time()) - int(issued)
+        if not 0 <= age <= 1800:
+            return False
+        plain = issued + "." + nonce
+        expected = hmac.new(setting("ADMIN_PASSWORD").encode("utf-8"),
+                            ("wonri-upload-v1:" + plain).encode("utf-8"),
+                            hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, sig)
+    except (TypeError, ValueError):
+        return False
+
+
 def dashboard() -> str:
     auth = "연결됨" if has_refresh_token() and google_ready() else "미연결"
     s = public_stats()
     stat = lambda x: "미확인" if s[x] is None else f'{s[x]:,}'
     oauth = '<a href="/oauth/start">YouTube 업로드 권한 인증 시작</a>' if google_ready() else '<b>Google OAuth Client ID / Secret 환경변수 미설정</b>'
-    form = '''<form action="/upload" method="post" enctype="multipart/form-data">
+    form = f'''<form action="/upload" method="post" enctype="multipart/form-data">
+<input type="hidden" name="csrf" value="{html.escape(upload_form_token(), quote=True)}">
 <label>제목 (100자 이하)<input name="title" maxlength="100" required value="강아지야 그건 물 아니라고ㅋㅋ 댓글극장 01 #Shorts"></label>
 <label>설명<textarea name="description" rows="3" maxlength="2000">강아지의 수상한 행동을 직접 제작한 애니메이션으로 재구성했습니다. 실제 공개 댓글 일부를 인용했으며, 타인의 영상과 음원은 사용하지 않았습니다. 참고 영상: https://www.youtube.com/shorts/iXFzyi_mKt4 #Shorts #강아지 #댓글극장</textarea></label>
 <label>MP4 영상 (최대 35MB)<input type="file" name="video" accept="video/mp4" required></label>
@@ -342,8 +376,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(405, "not allowed", "text/plain")
         if not self.authenticated():
             return
-        if self.headers.get("Origin", "") != base_url():
-            return self.send(403, safe_page("요청 차단", "<article>허용되지 않은 출처의 요청입니다.</article>"))
+        # Safari and embedded browsers may omit or rewrite the Origin header.
+        # Validate a same-origin signed form token below instead.
         if not (google_ready() and has_refresh_token()):
             return self.send(503, safe_page("OAuth 미연결", "<article>YouTube 업로드 OAuth를 먼저 연결하세요.</article>"))
         try:
@@ -363,6 +397,12 @@ class Handler(BaseHTTPRequestHandler):
             name = part.get_param("name", header="content-disposition")
             if name:
                 fields[name] = part.get_payload(decode=True) or b""
+        if not valid_upload_form_token(fields.get("csrf", b"").decode("utf-8", "replace")):
+            print("UPLOAD_DIAG stage=csrf status=blocked", flush=True)
+            return self.send(403, safe_page("업로드 요청 만료",
+                    "<article><h2>업로드 양식을 새로고침해 주세요</h2>"
+                    "<p>보안 확인이 만료됐거나 기존 버전의 양식입니다. 대시보드를 새로 열어 MP4를 다시 선택하세요.</p></article>"))
+        print("UPLOAD_DIAG stage=csrf status=passed", flush=True)
         try:
             title = fields.get("title", b"").decode("utf-8").strip()
             description = fields.get("description", b"").decode("utf-8").strip()
