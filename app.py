@@ -15,6 +15,7 @@ import secrets
 import threading
 import time
 from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 CHANNEL_ID = "UCG2U_iDGOxCXanGmBdiJ-GA"
@@ -250,10 +251,12 @@ class Handler(BaseHTTPRequestHandler):
         code = q.get("code", [""])[0]
         if not code:
             return self.send(400, safe_page("코드 누락", "<article>Google 인증 코드가 누락되었습니다.</article>"), extra=cleared)
+        stage = "token_exchange"
         try:
             tok = exchange_token({"code": code, "client_id": setting("GOOGLE_CLIENT_ID"),
                                   "client_secret": setting("GOOGLE_CLIENT_SECRET"), "redirect_uri": base_url() + "/oauth/callback",
                                   "grant_type": "authorization_code"})
+            stage = "channel_verify"
             verify_owned_channel(tok["access_token"])
             refresh = tok.get("refresh_token", "")
             with TOKEN_LOCK:
@@ -267,8 +270,48 @@ class Handler(BaseHTTPRequestHandler):
                            "YT_REFRESH_TOKEN에 직접 저장하세요. 타인과 공유하지 마세요."
                            f"<textarea readonly rows='5'>{html.escape(refresh)}</textarea>")
             return self.send(200, safe_page("OAuth 성공", f"<article><h2>YouTube 승인 성공</h2><p>{message}</p><p><a href='/'>대시보드로 이동</a></p></article>"), extra=cleared)
+        except HTTPError as error:
+            # Keep OAuth codes, tokens, secrets and raw provider responses out of logs.
+            reason = "unknown"
+            try:
+                info = json.loads(error.read(12000).decode("utf-8")).get("error", {})
+                if isinstance(info, str):
+                    candidate = info
+                elif isinstance(info, dict):
+                    errors = info.get("errors", [])
+                    candidate = errors[0].get("reason", "") if errors and isinstance(errors[0], dict) else ""
+                    if not candidate:
+                        candidate = info.get("status", "")
+                else:
+                    candidate = ""
+                allowed = {"invalid_grant", "invalid_client", "unauthorized_client",
+                           "accessNotConfigured", "SERVICE_DISABLED", "PERMISSION_DENIED",
+                           "insufficientPermissions", "authorizationRequired",
+                           "youtubeSignupRequired", "quotaExceeded", "forbidden",
+                           "access_denied"}
+                reason = candidate if candidate in allowed else "unknown"
+            except (ValueError, UnicodeError, AttributeError, TypeError, IndexError):
+                pass
+            print(f"OAUTH_DIAG stage={stage} http={error.code} reason={reason}", flush=True)
+            guidance = ("YouTube Data API v3의 Google Cloud 활성화 여부 및 승인한 YouTube 채널을 확인하세요."
+                        if stage == "channel_verify" else
+                        "Google OAuth 클라이언트 ID/Secret과 리디렉션 URI를 확인하고 새로 승인하세요.")
+            body = (f"<article><h2>인증 진단</h2><p>실패 단계: {html.escape(stage)} / "
+                    f"Google HTTP {error.code} / 오류 코드: {html.escape(reason)}</p>"
+                    f"<p>{guidance}</p><p>인증정보는 표시하거나 저장하지 않았습니다.</p></article>")
+            return self.send(502, safe_page("OAuth 연결 진단", body), extra=cleared)
+        except RuntimeError as error:
+            mismatch = str(error) == "승인한 Google 계정이 원리한입 채널 소유자가 아닙니다"
+            reason = "channel_mismatch" if mismatch else "runtime_error"
+            print(f"OAUTH_DIAG stage={stage} reason={reason}", flush=True)
+            guidance = ("Google에서 원리한입 채널을 선택했는지 확인하세요. 브랜드 채널이면 해당 채널로 다시 승인하세요."
+                        if mismatch else "Google 인증 및 채널 설정을 확인하세요.")
+            return self.send(502, safe_page("OAuth 연결 진단",
+                             f"<article><h2>인증 단계: {html.escape(stage)}</h2><p>오류: {reason}</p><p>{guidance}</p></article>"), extra=cleared)
         except Exception:
-            return self.send(502, safe_page("OAuth 연결 오류", "<article>Google 권한 확인에 실패했습니다. 승인한 채널, OAuth 클라이언트와 리디렉션 URI를 확인하세요.</article>"), extra=cleared)
+            print(f"OAUTH_DIAG stage={stage} reason=unexpected_error", flush=True)
+            return self.send(502, safe_page("OAuth 연결 오류",
+                             "<article>인증 처리 중 예상하지 못한 문제가 발생했습니다. 서버 진단 기록을 확인하세요.</article>"), extra=cleared)
 
     def do_POST(self):
         if urlsplit(self.path).path != "/upload":
