@@ -179,6 +179,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
+        # Log only non-sensitive route and status for connectivity diagnosis.
+        # Never log OAuth callback queries, cookies, tokens, or IP addresses.
+        request_path = urlsplit(self.path).path
+        if request_path in ("/health", "/healthz", "/", "/oauth/start"):
+            print(f"HTTP_DIAG route={request_path} status={status}", flush=True)
 
     def authenticated(self) -> bool:
         pwd = setting("ADMIN_PASSWORD")
