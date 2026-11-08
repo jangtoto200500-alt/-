@@ -147,8 +147,8 @@ def dashboard() -> str:
     stat = lambda x: "미확인" if s[x] is None else f'{s[x]:,}'
     oauth = '<a href="/oauth/start">YouTube 업로드 권한 인증 시작</a>' if google_ready() else '<b>Google OAuth Client ID / Secret 환경변수 미설정</b>'
     form = '''<form action="/upload" method="post" enctype="multipart/form-data">
-<label>제목 (100자 이하)<input name="title" maxlength="100" required value="원리한입 | 원리가 보이는 30초"></label>
-<label>설명<textarea name="description" rows="3" maxlength="2000">원리한입 오리지널 과학·기술 설명 쇼츠 #shorts</textarea></label>
+<label>제목 (100자 이하)<input name="title" maxlength="100" required value="강아지야 그건 물 아니라고ㅋㅋ 댓글극장 01 #Shorts"></label>
+<label>설명<textarea name="description" rows="3" maxlength="2000">강아지의 수상한 행동을 직접 제작한 애니메이션으로 재구성했습니다. 실제 공개 댓글 일부를 인용했으며, 타인의 영상과 음원은 사용하지 않았습니다. 참고 영상: https://www.youtube.com/shorts/iXFzyi_mKt4 #Shorts #강아지 #댓글극장</textarea></label>
 <label>MP4 영상 (최대 35MB)<input type="file" name="video" accept="video/mp4" required></label>
 <label>한국시간 예약 공개 (선택사항: 공란이면 비공개)<input name="schedule_kr" type="datetime-local"></label>
 <button type="submit">이 영상 업로드 (기본 비공개)</button></form>'''
@@ -156,7 +156,7 @@ def dashboard() -> str:
 <p>공식 API 통계: {html.escape(s['note'])}</p><p>구독자 {stat('subscribers')} · 조회수 {stat('views')} · 공개 영상 {stat('videos')}</p>
 <p>업로드 OAuth: <strong>{auth}</strong> · 실제 광고 수익: <strong>미확인</strong></p></article>
 <article><h2>① Google OAuth</h2><p>{oauth}</p><p>Google의 승인을 받은 뒤 Refresh Token을 Render 비밀 환경변수 YT_REFRESH_TOKEN에 저장하면 서버 재시작 후에도 업로드 권한이 유지됩니다.</p></article>
-<article><h2>② 업로드 시험</h2><p>처음에는 예약 시각을 비워 <b>비공개</b>로만 시험하세요.</p>{form}</article>''')
+<article><h2>② 첫 쇼츠 비공개 업로드</h2><p><b>원리한입 댓글극장 01</b> 원본 MP4를 선택하세요. 제목과 설명은 미리 채웠으며 수정할 수 있습니다. 예약 시각을 비워 두면 <b>비공개</b>로 업로드됩니다. 구글 업로드 권한 승인 후 아래 버튼을 누르세요.</p>{form}</article>''')
 
 
 class Handler(BaseHTTPRequestHandler):
