@@ -116,7 +116,7 @@ def private_upload(mp4: bytes, title: str, description: str, when_kr: str) -> st
         if local.astimezone(dt.timezone.utc) < dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=15):
             raise ValueError("예약 시각은 현재보다 15분 이상 뒤여야 합니다")
         status["publishAt"] = local.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
-    meta = {"snippet": {"title": title, "description": description, "categoryId": "28", "defaultLanguage": "ko"}, "status": status}
+    meta = {"snippet": {"title": title, "description": description, "categoryId": "24", "defaultLanguage": "ko"}, "status": status}
     start_url = "https://www.googleapis.com/upload/youtube/v3/videos?" + urlencode({"uploadType": "resumable", "part": "snippet,status"})
     req = Request(start_url, data=json.dumps(meta, ensure_ascii=False).encode(), method="POST", headers={
         "Authorization": "Bearer " + token, "Content-Type": "application/json; charset=UTF-8",
