@@ -571,6 +571,59 @@ def release_nov_09():
         print(f"NOV09_JOB result=failed class={type(exc).__name__}", flush=True)
 
 
+# Exactly one explicitly requested upload of the supplied 15-second animation.
+# Keep source URL and OAuth secrets in environment only, never in source/logs.
+CLIP_TITLE = "청소기 켰더니 달이 난리 났다ㅋㅋ 🌙🤖 #Shorts"
+CLIP_DESCRIPTION = (
+    "옥상 청소하던 꼬마 로봇 피코의 대형 사고!\n"
+    "달까지 말려든 우당탕 3D 애니메이션을 감상해 보세요.\n\n"
+    "Picsart로 제작한 오리지널 AI 애니메이션입니다. 등장인물과 상황은 허구입니다.\n"
+    "#원리한입 #3D애니메이션 #AI애니메이션 #로봇 #쇼츠 #Shorts"
+)
+CLIP_SHA256 = "bc9a97dde3223c64e5f2c5c38a81ec3dd629463af556679aa04c2ed142dee489"
+CLIP_BYTES = 9082749
+
+
+def release_user_video_20261109():
+    """One-shot explicitly user requested public publication; never run by default."""
+    if setting("WONRI_USER_CLIP_TRIGGER") != "publish":
+        return
+    print("USER_CLIP stage=started", flush=True)
+    try:
+        token = access_token()
+        verify_owned_channel(token)
+        existing = find_release_duplicate(token, CLIP_TITLE)
+        if existing:
+            print(f"USER_CLIP result=already_exists id={existing}", flush=True)
+            return
+        media_url = setting("WONRI_USER_CLIP_URL")
+        if not (urlsplit(media_url).scheme == "https"
+                and urlsplit(media_url).hostname == "storage.googleapis.com"
+                and urlsplit(media_url).path.endswith(".mp4")):
+            raise ValueError("Untrusted video source")
+        with urlopen(Request(media_url, headers={"User-Agent": "Wonrihanip-OwnerUpload/1.0"}), timeout=100) as response:
+            if urlsplit(response.geturl()).hostname != "storage.googleapis.com":
+                raise ValueError("Media redirect blocked")
+            video = response.read(MAX_UPLOAD_BYTES+1)
+        if not (len(video) == CLIP_BYTES
+                and video[4:8] == b"ftyp"
+                and hashlib.sha256(video).hexdigest() == CLIP_SHA256):
+            raise ValueError("Uploaded MP4 failed exact SHA256/size/magic checks")
+        print(f"USER_CLIP stage=media_verified bytes={len(video)}", flush=True)
+        video_id = private_upload(video, CLIP_TITLE, CLIP_DESCRIPTION, "", privacy="public")
+        verify = json.loads(api_request(
+            "https://www.googleapis.com/youtube/v3/videos?" + urlencode({"part":"status,snippet", "id":video_id}),
+            headers={"Authorization":"Bearer "+token}, timeout=24))
+        item = (verify.get("items") or [{}])[0]
+        actual_privacy = item.get("status", {}).get("privacyStatus", "unknown")
+        actual_title = item.get("snippet", {}).get("title", "")
+        print(f"USER_CLIP result=uploaded id={video_id} visibility={actual_privacy} title_ok={actual_title == CLIP_TITLE}",flush=True)
+    except HTTPError as exc:
+        print(f"USER_CLIP result=failed http={exc.code}", flush=True)
+    except Exception as exc:
+        print(f"USER_CLIP result=failed class={type(exc).__name__}", flush=True)
+
+
 if __name__ == "__main__":
     port = int(setting("PORT", "10000"))
     print("Shorts Studio ready; password and tokens are never printed", flush=True)
@@ -579,4 +632,6 @@ if __name__ == "__main__":
         threading.Thread(target=release_one_approved_video, daemon=True).start()
     if setting("WONRI_1109_TRIGGER") == "publish":
         threading.Thread(target=release_nov_09, daemon=True).start()
+    if setting("WONRI_USER_CLIP_TRIGGER") == "publish":
+        threading.Thread(target=release_user_video_20261109, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
