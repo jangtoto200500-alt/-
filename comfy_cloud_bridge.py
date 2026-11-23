@@ -50,6 +50,13 @@ def _api(path: str, *, method: str = "GET", payload: dict | None = None, v1: boo
     try:
         with urlopen(request, timeout=25) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
+            mime = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() if hasattr(response, "headers") else ""
+        if mime and mime not in ("application/json", "application/problem+json") and not mime.endswith("+json"):
+            # Do not include provider response bodies; they could hold private content.
+            reason = "html" if mime == "text/html" else "text" if mime == "text/plain" else "other"
+            raise ComfyCloudError("provider_non_json_" + reason)
+        if not raw.strip():
+            raise ComfyCloudError("provider_empty_response")
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ComfyCloudError("response_too_large")
         result = json.loads(raw)
