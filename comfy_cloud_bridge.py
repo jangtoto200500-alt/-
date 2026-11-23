@@ -68,7 +68,15 @@ def _api(path: str, *, method: str = "GET", payload: dict | None = None, v1: boo
     except (URLError, TimeoutError):
         raise ComfyCloudError("provider_unreachable") from None
     except (ValueError, UnicodeError):
-        raise ComfyCloudError("provider_invalid_json") from None
+        # Log only response structure (never a byte of provider text or account data).
+        leading = raw.lstrip()[:2] if "raw" in locals() else b""
+        shape = ("markup" if leading.startswith(b"<") else
+                 "json_like" if leading.startswith((b"{", b"[")) else
+                 "gzip" if leading.startswith(b"\\x1f\\x8b") else
+                 "other")
+        mimetype = ("json" if "json" in locals().get("mime", "") else
+                    "missing" if not locals().get("mime", "") else "nonjson")
+        raise ComfyCloudError("provider_invalid_json_" + mimetype + "_" + shape) from None
 
 
 def status(*, check_connection: bool = False) -> dict:
