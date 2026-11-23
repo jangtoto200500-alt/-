@@ -664,6 +664,11 @@ if __name__ == "__main__":
     port = int(setting("PORT", "10000"))
     print("Shorts Studio ready; password and tokens are never printed", flush=True)
     print("CONFIG_READY admin={} google_oauth={} refresh_token={} youtube_public_api={}".format(admin_ready(), google_ready(), has_refresh_token(), bool(setting("YOUTUBE_API_KEY"))), flush=True)
+    # Non-billable startup diagnostic. Never log account identifiers, keys, or response bodies.
+    comfy_state = comfy_cloud_bridge.status(check_connection=True)
+    print("COMFY_DIAG configured={} connected={} generation_enabled={} reason={}".format(
+        comfy_state["configured"], comfy_state["connected"],
+        comfy_state["generation_enabled"], comfy_state.get("diagnostic", "none")), flush=True)
     if setting(RELEASE_FLAG) == "publish":
         threading.Thread(target=release_one_approved_video, daemon=True).start()
     if setting("WONRI_1109_TRIGGER") == "publish":
