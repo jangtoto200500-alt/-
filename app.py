@@ -18,6 +18,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+import comfy_cloud_bridge
+
 CHANNEL_ID = "UCG2U_iDGOxCXanGmBdiJ-GA"
 YT_SCOPE = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
 MAX_UPLOAD_BYTES = 35 * 1024 * 1024  # 35MB: 쇼츠 시험 업로드 전용
@@ -269,6 +271,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, json.dumps({"channel_id": CHANNEL_ID, "stats": public_stats(),
                                               "upload_oauth_configured": google_ready() and has_refresh_token(),
                                               "actual_revenue": None}, ensure_ascii=False), "application/json; charset=utf-8")
+        if path == "/api/comfy/status":
+            result = comfy_cloud_bridge.status(check_connection=True)
+            return self.send(200, json.dumps(result, ensure_ascii=False),
+                             "application/json; charset=utf-8")
+        if path.startswith("/api/comfy/jobs/") or path.startswith("/api/comfy/assets/"):
+            try:
+                if path.startswith("/api/comfy/jobs/"):
+                    result = comfy_cloud_bridge.job(path.rsplit("/", 1)[-1])
+                else:
+                    result = comfy_cloud_bridge.asset(path.rsplit("/", 1)[-1])
+                return self.send(200, json.dumps(result, ensure_ascii=False),
+                                 "application/json; charset=utf-8")
+            except (ValueError, comfy_cloud_bridge.ComfyCloudError):
+                return self.send(400, '{"error":"comfy_request_failed"}', "application/json")
         if path == "/oauth/start":
             if not google_ready():
                 return self.send(503, safe_page("OAuth 설정 필요", "<article>Render에 GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET을 먼저 등록하세요.</article>"))
@@ -376,7 +392,27 @@ class Handler(BaseHTTPRequestHandler):
                              "<article>인증 처리 중 예상하지 못한 문제가 발생했습니다. 서버 진단 기록을 확인하세요.</article>"), extra=cleared)
 
     def do_POST(self):
-        if urlsplit(self.path).path != "/upload":
+        path = urlsplit(self.path).path
+        if path == "/api/comfy/submit":
+            if not self.authenticated():
+                return
+            try:
+                if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+                    return self.send(415, '{"error":"json_required"}', "application/json")
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 1 <= length <= 240_000:
+                    return self.send(413, '{"error":"body_too_large"}', "application/json")
+                request = json.loads(self.rfile.read(length))
+                if not isinstance(request, dict) or not isinstance(request.get("partner_nodes", False), bool):
+                    raise ValueError("invalid request")
+                result = comfy_cloud_bridge.submit(
+                    request.get("workflow"), request_id=request["request_id"],
+                    confirmed=(self.headers.get("X-Comfy-Billable-Confirm", "") == "generate"),
+                    partner_nodes=request.get("partner_nodes", False))
+                return self.send(202, json.dumps(result), "application/json")
+            except (ValueError, TypeError, KeyError, comfy_cloud_bridge.ComfyCloudError):
+                return self.send(400, '{"error":"comfy_submission_blocked"}', "application/json")
+        if path != "/upload":
             return self.send(405, "not allowed", "text/plain")
         if not self.authenticated():
             return
